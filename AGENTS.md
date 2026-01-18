@@ -111,6 +111,100 @@ Implement these patterns consistently:
 - **Resource Pattern**: ResourceManager for localized messages in separate .resx files (LogMessages.resx, ErrorMessages.resx)
 - **Minimal API Pattern**: Endpoints defined in `Endpoints/` folder, never in `Program.cs`
 
+### Entity Framework Core Patterns
+
+Use EF Core 10+ as the primary ORM. Follow these patterns:
+
+**DbContext Configuration**:
+```csharp
+public class AppDbContext : DbContext
+{
+    public AppDbContext(DbContextOptions<AppDbContext> options)
+        : base(options) { }
+
+    public DbSet<Customer> Customers => Set<Customer>();
+    public DbSet<Order> Orders => Set<Order>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Customer>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Name).IsRequired().HasMaxLength(100);
+            entity.HasMany(e => e.Orders)
+                  .WithOne(o => o.Customer)
+                  .HasForeignKey(o => o.CustomerId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.ApplyConfigurationsFromAssembly(Assembly.GetExecutingAssembly());
+    }
+}
+```
+
+**Dependency Injection**:
+```csharp
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(connectionString,
+        sqlOptions => sqlOptions.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery)));
+```
+
+**Repository Pattern**:
+```csharp
+public interface ICustomerRepository
+{
+    Task<Customer?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default);
+    Task<IEnumerable<Customer>> GetAllAsync(CancellationToken cancellationToken = default);
+    Task AddAsync(Customer entity, CancellationToken cancellationToken = default);
+    Task UpdateAsync(Customer entity);
+    Task DeleteAsync(Guid id);
+}
+
+public class CustomerRepository : ICustomerRepository
+{
+    private readonly AppDbContext _context;
+
+    public CustomerRepository(AppDbContext context) => _context = context;
+
+    public async Task<Customer?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        return await _context.Customers
+            .AsNoTracking()
+            .FirstOrDefaultAsync(c => c.Id == id, cancellationToken);
+    }
+
+    public async Task<IEnumerable<Customer>> GetAllAsync(CancellationToken cancellationToken = default)
+    {
+        return await _context.Customers
+            .AsNoTracking()
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task AddAsync(Customer entity, CancellationToken cancellationToken = default)
+    {
+        await _context.Customers.AddAsync(entity, cancellationToken);
+    }
+}
+```
+
+**Unit of Work**:
+```csharp
+public interface IUnitOfWork : IDisposable
+{
+    ICustomerRepository Customers { get; }
+    IOrderRepository Orders { get; }
+    Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
+}
+```
+
+**Best Practices**:
+- Use **AsNoTracking** for read-only queries
+- Use **QuerySplittingBehavior.SplitQuery** for related data
+- Configure **cascading deletes** explicitly
+- Use **FromSqlRaw** for complex queries
+- Apply **migrations** with `dotnet ef migrations add`
+- Keep **connection strings** in configuration with secret management
+
 ### FluentResults Pattern
 
 Use FluentResults library instead of exceptions for expected failure scenarios:
@@ -258,14 +352,17 @@ If you cannot clearly explain these points, STOP and ask for clarification.
 src/                 # Source code
 ├── Core/            # Domain layer (aggregates, value objects, domain events)
 ├── Application/     # Application services, DTOs, interfaces
-├── Infrastructure/  # Repositories, external services, adapters
+├── Infrastructure/  # Repositories, external services, adapters, DbContext
+│   ├── Data/        # DbContext and configurations
+│   ├── Migrations/  # EF Core migrations
+│   └── Repositories/ # Repository implementations
 ├── WebApi/          # Minimal API with Endpoints/ folder
 │   └── Endpoints/   # Endpoint definitions (NEVER in Program.cs)
 └── Console/         # CLI, entry points
 
 tests/               # Tests
 ├── Unit/            # Unit tests
-├── Integration/     # Integration tests
+├── Integration/     # Integration tests (with real database)
 └── Contract/        # Contract tests
 ```
 
